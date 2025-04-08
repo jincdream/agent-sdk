@@ -35,6 +35,8 @@ pnpm add @nio-ai/agent-sdk
 
 ## 快速开始
 
+### 基础示例
+
 ```typescript
 import { Agent } from '@nio-ai/agent-sdk';
 
@@ -55,103 +57,494 @@ async function handleUserMessage(userInput: string) {
 handleUserMessage('你好');
 ```
 
+### 完整功能示例
+
+```typescript
+import { Agent, Tool, ContextManager, Message } from '@nio-ai/agent-sdk';
+
+// 1. 定义自定义工具
+class CalculatorTool implements Tool {
+  name = 'calculator';
+  description = '执行基础数学计算';
+  parameters = {
+    type: 'object',
+    properties: {
+      operation: { 
+        type: 'string', 
+        enum: ['add', 'subtract', 'multiply', 'divide'],
+        description: '运算类型'
+      },
+      a: { type: 'number', description: '第一个数字' },
+      b: { type: 'number', description: '第二个数字' }
+    },
+    required: ['operation', 'a', 'b']
+  };
+  
+  async execute(args: { operation: string; a: number; b: number }): Promise<string> {
+    const { operation, a, b } = args;
+    switch (operation) {
+      case 'add': return `${a + b}`;
+      case 'subtract': return `${a - b}`;
+      case 'multiply': return `${a * b}`;
+      case 'divide': return b !== 0 ? `${a / b}` : '除数不能为零';
+      default: return '不支持的运算';
+    }
+  }
+}
+
+// 2. 创建上下文管理器
+const contextManager = new ContextManager({
+  maxHistory: 10, // 最多保存10条历史记录
+  ttl: 3600000   // 上下文有效期1小时
+});
+
+// 3. 创建 Agent 实例
+const agent = new Agent({
+  name: '智能助手',
+  version: '1.0.0',
+  description: '一个支持数学计算的智能助手',
+  minConfidence: 0.7,
+  defaultPrompts: {
+    greeting: '你好，我是{{name}}，我可以帮你进行数学计算。',
+    error: '抱歉，我遇到了一些问题，请稍后再试。'
+  }
+});
+
+// 4. 注册工具
+agent.registerTool(new CalculatorTool());
+
+// 5. 添加自定义提示模板
+agent.addPromptTemplate(
+  'calculation_result',
+  '计算结果：{{result}}'
+);
+
+// 6. 处理用户消息的完整示例
+async function handleUserInput(userInput: string) {
+  try {
+    // 添加用户消息到上下文
+    contextManager.addMessage({
+      role: 'user',
+      content: userInput,
+      timestamp: Date.now()
+    });
+
+    // 处理消息
+    const response = await agent.handleMessage(userInput);
+
+    // 添加助手回复到上下文
+    contextManager.addMessage({
+      role: 'assistant',
+      content: response.content,
+      timestamp: Date.now()
+    });
+
+    // 获取完整对话历史
+    const history = contextManager.getContext();
+    
+    return {
+      response: response.content,
+      history: history
+    };
+  } catch (error) {
+    console.error('处理消息时出错:', error);
+    return {
+      response: '抱歉，处理您的请求时出现了错误。',
+      error: error.message
+    };
+  }
+}
+
+// 7. 使用示例
+async function runExample() {
+  // 基础对话
+  console.log(await handleUserInput('你好'));
+  
+  // 数学计算
+  console.log(await handleUserInput('请帮我计算 23 加 45'));
+  
+  // 查看历史记录
+  console.log(await handleUserInput('我们刚才聊了什么？'));
+  
+  // 错误处理
+  console.log(await handleUserInput('请计算 10 除以 0'));
+}
+
+// 运行示例
+runExample().catch(console.error);
+```
+
+### 多轮对话示例
+
+```typescript
+// 创建一个支持多轮对话的助手
+const conversationAgent = new Agent({
+  name: '对话助手',
+  version: '1.0.0',
+  description: '支持多轮对话的智能助手'
+});
+
+// 定义对话状态
+interface ConversationState {
+  currentTopic?: string;
+  userPreferences?: Record<string, any>;
+  lastAction?: string;
+}
+
+// 处理多轮对话
+async function handleConversation(userInput: string, state: ConversationState) {
+  // 根据上下文状态调整响应
+  const response = await conversationAgent.handleMessage(userInput, {
+    state,
+    context: contextManager.getContext()
+  });
+
+  // 更新对话状态
+  if (response.state) {
+    Object.assign(state, response.state);
+  }
+
+  return {
+    response: response.content,
+    state
+  };
+}
+
+// 使用示例
+async function runConversation() {
+  const state: ConversationState = {};
+  
+  // 第一轮对话
+  const result1 = await handleConversation('我想买一台笔记本电脑', state);
+  console.log('助手:', result1.response);
+  
+  // 第二轮对话（基于上一轮的状态）
+  const result2 = await handleConversation('预算在5000左右', state);
+  console.log('助手:', result2.response);
+  
+  // 第三轮对话
+  const result3 = await handleConversation('主要用于办公', state);
+  console.log('助手:', result3.response);
+}
+
+runConversation().catch(console.error);
+```
+
 ## 核心功能
 
 ### 1. 上下文管理
 
-Agent SDK 提供了上下文管理功能，可以保存和检索消息历史：
+Agent SDK 提供了强大的上下文管理功能，支持消息历史、状态管理和会话控制：
 
 ```typescript
-import { ContextManager, Message } from '@nio-ai/agent-sdk';
+import { ContextManager, Message, ContextConfig } from '@nio-ai/agent-sdk';
 
-const contextManager = new ContextManager();
+// 创建上下文管理器
+const contextManager = new ContextManager({
+  maxHistory: 10,        // 最多保存10条历史记录
+  ttl: 3600000,         // 上下文有效期1小时
+  maxTokens: 2000,      // 最大token数
+  summarizeThreshold: 5  // 超过5条消息时进行摘要
+});
 
 // 添加消息
 contextManager.addMessage({
   role: 'user',
   content: '你好',
-  timestamp: Date.now()
+  timestamp: Date.now(),
+  metadata: {
+    source: 'web',
+    userId: 'user123'
+  }
 });
 
 // 获取上下文
 const context = contextManager.getContext();
+
+// 获取摘要
+const summary = await contextManager.getSummary();
+
+// 清除过期消息
+contextManager.cleanup();
+
+// 重置上下文
+contextManager.reset();
+
+// 导出上下文
+const exportedContext = contextManager.export();
+
+// 导入上下文
+contextManager.import(exportedContext);
 ```
 
 ### 2. 工具注册与调用
 
-您可以注册自定义工具，并由 Agent 自动调用：
+工具系统支持同步和异步操作，支持参数验证和错误处理：
 
 ```typescript
-import { Agent, Tool } from '@nio-ai/agent-sdk';
+import { Agent, Tool, ToolResult, ToolError } from '@nio-ai/agent-sdk';
 
-// 定义工具
-class WeatherTool implements Tool {
-  name = 'weather';
-  description = '查询城市天气';
+// 基础工具示例
+class SimpleTool implements Tool {
+  name = 'simple';
+  description = '简单工具示例';
   parameters = {
     type: 'object',
     properties: {
-      city: { type: 'string', description: '城市名称' }
+      input: { type: 'string', description: '输入文本' }
     },
-    required: ['city']
+    required: ['input']
   };
   
-  async execute(args: { city: string }): Promise<string> {
-    const { city } = args;
-    // 实际应用中调用天气 API
-    return `${city}今天晴朗，气温25°C`;
+  async execute(args: { input: string }): Promise<string> {
+    return `处理结果: ${args.input}`;
   }
 }
 
-// 注册工具
-const agent = new Agent({ name: '小助手', version: '1.0.0' });
-agent.registerTool(new WeatherTool());
+// 异步工具示例
+class AsyncTool implements Tool {
+  name = 'async';
+  description = '异步操作示例';
+  parameters = {
+    type: 'object',
+    properties: {
+      delay: { type: 'number', description: '延迟时间(ms)' }
+    },
+    required: ['delay']
+  };
+  
+  async execute(args: { delay: number }): Promise<string> {
+    await new Promise(resolve => setTimeout(resolve, args.delay));
+    return `延迟${args.delay}ms后返回`;
+  }
+}
 
-// 处理用户消息，自动调用工具
-agent.handleMessage('北京今天天气怎么样？');
+// 带验证的工具示例
+class ValidationTool implements Tool {
+  name = 'validation';
+  description = '参数验证示例';
+  parameters = {
+    type: 'object',
+    properties: {
+      age: { 
+        type: 'number',
+        minimum: 0,
+        maximum: 150,
+        description: '年龄'
+      },
+      name: {
+        type: 'string',
+        minLength: 2,
+        maxLength: 50,
+        pattern: '^[a-zA-Z]+$',
+        description: '姓名'
+      }
+    },
+    required: ['age', 'name']
+  };
+  
+  async execute(args: { age: number; name: string }): Promise<string> {
+    return `验证通过: ${args.name}, ${args.age}岁`;
+  }
+}
+
+// 工具注册和使用
+const agent = new Agent({ name: '工具示例', version: '1.0.0' });
+
+// 注册单个工具
+agent.registerTool(new SimpleTool());
+
+// 批量注册工具
+agent.registerTools([
+  new AsyncTool(),
+  new ValidationTool()
+]);
+
+// 处理工具调用
+async function handleToolCall(toolName: string, args: any) {
+  try {
+    const result = await agent.executeTool(toolName, args);
+    return result;
+  } catch (error) {
+    if (error instanceof ToolError) {
+      console.error('工具调用错误:', error.message);
+    }
+    throw error;
+  }
+}
 ```
 
 ### 3. 意图识别
 
-可以注册自定义意图处理器：
+意图识别系统支持多种匹配策略和自定义处理器：
 
 ```typescript
-import { Agent, IntentHandler, IntentResult } from '@nio-ai/agent-sdk';
+import { Agent, IntentHandler, IntentResult, IntentConfig } from '@nio-ai/agent-sdk';
 
-// 定义意图处理器
-class WeatherIntentHandler implements IntentHandler {
+// 基础意图处理器
+class BasicIntentHandler implements IntentHandler {
   async handle(input: string): Promise<IntentResult | null> {
     if (input.includes('天气')) {
       return {
-        intent: 'call_tool',
-        tool: 'weather',
-        parameters: { city: '北京' },
-        confidence: 0.9
+        intent: 'weather_query',
+        confidence: 0.9,
+        parameters: { type: 'current' }
       };
     }
     return null;
   }
 }
 
+// 正则匹配意图处理器
+class RegexIntentHandler implements IntentHandler {
+  private patterns = {
+    greeting: /^(你好|早上好|晚上好)/,
+    farewell: /^(再见|拜拜|下次见)/,
+    thanks: /^(谢谢|感谢|多谢)/
+  };
+
+  async handle(input: string): Promise<IntentResult | null> {
+    for (const [intent, pattern] of Object.entries(this.patterns)) {
+      if (pattern.test(input)) {
+        return {
+          intent,
+          confidence: 0.8,
+          parameters: {}
+        };
+      }
+    }
+    return null;
+  }
+}
+
+// 机器学习意图处理器
+class MLIntentHandler implements IntentHandler {
+  private model: any; // 实际的机器学习模型
+
+  async handle(input: string): Promise<IntentResult | null> {
+    const prediction = await this.model.predict(input);
+    if (prediction.confidence > 0.7) {
+      return {
+        intent: prediction.intent,
+        confidence: prediction.confidence,
+        parameters: prediction.parameters
+      };
+    }
+    return null;
+  }
+}
+
+// 意图识别配置和使用
+const agent = new Agent({
+  name: '意图识别示例',
+  version: '1.0.0',
+  intentConfig: {
+    minConfidence: 0.6,
+    maxIntents: 3,
+    timeout: 5000
+  }
+});
+
 // 注册意图处理器
-const agent = new Agent({ name: '小助手', version: '1.0.0' });
-agent.intentRecognizer.registerIntent('weather_intent', new WeatherIntentHandler());
+agent.intentRecognizer.registerIntent('basic', new BasicIntentHandler());
+agent.intentRecognizer.registerIntent('regex', new RegexIntentHandler());
+agent.intentRecognizer.registerIntent('ml', new MLIntentHandler());
+
+// 意图识别使用示例
+async function recognizeIntent(input: string) {
+  const intents = await agent.intentRecognizer.recognize(input);
+  return intents;
+}
 ```
 
 ### 4. 提示模板管理
 
-您可以定义和管理提示模板：
+提示模板系统支持变量替换、条件逻辑和模板继承：
 
 ```typescript
-import { Agent } from '@nio-ai/agent-sdk';
+import { Agent, PromptTemplate, TemplateEngine } from '@nio-ai/agent-sdk';
 
-const agent = new Agent({ name: '小助手', version: '1.0.0' });
+// 创建模板引擎
+const templateEngine = new TemplateEngine({
+  delimiters: ['{{', '}}'],
+  escape: true
+});
 
-// 添加提示模板
-agent.addPromptTemplate(
-  'greeting',
-  '您好，我是{{name}}，一个{{description}}。有什么可以帮您的吗？'
-);
+// 基础模板
+const baseTemplate = new PromptTemplate({
+  name: 'base',
+  content: '你好，我是{{name}}，一个{{description}}。'
+});
+
+// 带条件的模板
+const conditionalTemplate = new PromptTemplate({
+  name: 'conditional',
+  content: `
+    {% if user.name %}
+    你好，{{user.name}}！
+    {% else %}
+    你好，访客！
+    {% endif %}
+    
+    {% if user.vip %}
+    欢迎回来，尊贵的VIP用户！
+    {% endif %}
+  `
+});
+
+// 带循环的模板
+const listTemplate = new PromptTemplate({
+  name: 'list',
+  content: `
+    您有以下待办事项：
+    {% for item in todos %}
+    - {{item.title}} (优先级: {{item.priority}})
+    {% endfor %}
+  `
+});
+
+// 模板继承
+const extendedTemplate = new PromptTemplate({
+  name: 'extended',
+  extends: 'base',
+  content: `
+    {{> base}}
+    我可以帮您：
+    {% for skill in skills %}
+    - {{skill}}
+    {% endfor %}
+  `
+});
+
+// 使用模板
+const agent = new Agent({ name: '模板示例', version: '1.0.0' });
+
+// 注册模板
+agent.registerTemplate(baseTemplate);
+agent.registerTemplate(conditionalTemplate);
+agent.registerTemplate(listTemplate);
+agent.registerTemplate(extendedTemplate);
+
+// 渲染模板
+const context = {
+  name: '助手',
+  description: 'AI助手',
+  user: {
+    name: '张三',
+    vip: true
+  },
+  todos: [
+    { title: '完成报告', priority: '高' },
+    { title: '预约会议', priority: '中' }
+  ],
+  skills: ['回答问题', '执行任务', '提供建议']
+};
+
+// 渲染不同模板
+console.log(agent.renderTemplate('base', context));
+console.log(agent.renderTemplate('conditional', context));
+console.log(agent.renderTemplate('list', context));
+console.log(agent.renderTemplate('extended', context));
 ```
 
 ## 高级用例：多轮对话
